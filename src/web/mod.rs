@@ -1,6 +1,6 @@
 mod error;
 mod middleware;
-mod response;
+pub mod response;
 mod services;
 
 use actix_web::web;

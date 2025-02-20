@@ -1,0 +1,1 @@
+ALTER TABLE servers ADD CONSTRAINT unique_port UNIQUE (port);

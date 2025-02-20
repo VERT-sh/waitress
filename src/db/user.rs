@@ -3,7 +3,7 @@ use argon2::{
     Argon2, PasswordHash,
 };
 use argon2::{PasswordHasher, PasswordVerifier};
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use thiserror::Error;

@@ -5,18 +5,10 @@ mod tests;
 mod version;
 mod web;
 
-use actix_web::{
-    body::BoxBody,
-    dev::ServiceResponse,
-    http::{header::HeaderName, StatusCode},
-    middleware::{ErrorHandlerResponse, ErrorHandlers, Logger},
-    web::Data,
-    App, HttpResponse, HttpServer,
-};
+use actix_web::{middleware::Logger, web::Data, App, HttpServer};
 use config::CONFIG;
 use db::Database;
 use dotenvy::dotenv;
-use serde_json::json;
 use sqlx::PgPool;
 
 #[actix_web::main]
