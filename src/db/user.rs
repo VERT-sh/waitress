@@ -122,7 +122,7 @@ impl User {
         .map_err(|e| AuthCreationError::JWTError(e))
     }
 
-    pub async fn from_auth(
+    pub async fn from_token(
         token: impl Into<String>,
         pool: &PgPool,
     ) -> Result<Self, AuthDecodeError> {

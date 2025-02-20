@@ -5,7 +5,7 @@ use thiserror::Error;
 pub enum ServerError {
     #[error("Server info not found")]
     ServerInfoNotFound,
-    #[error("Failed to download server")]
+    #[error("Failed to download server: {0}")]
     DownloadFailed(#[from] reqwest::Error),
 }
 
@@ -13,7 +13,6 @@ pub enum ServerError {
 #[serde(rename_all = "camelCase")]
 pub struct Version {
     pub id: String,
-    #[serde(rename = "type")]
     pub url: String,
 }
 

@@ -48,7 +48,7 @@ mod tests {
         let password = "test_password";
         let user = User::create(username, password, &pool).await.unwrap();
         let token = user.create_token().await.unwrap();
-        let user_from_auth = User::from_auth(token, &pool).await.unwrap();
+        let user_from_auth = User::from_token(token, &pool).await.unwrap();
         assert_eq!(user, user_from_auth);
     }
 }

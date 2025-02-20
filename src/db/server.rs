@@ -7,15 +7,16 @@ use bollard::{
 };
 use chrono::{DateTime, Utc};
 use futures::StreamExt as _;
+use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
-use std::collections::HashMap;
+use std::{collections::HashMap, env};
 use thiserror::Error;
 use tokio::fs;
 use uuid::Uuid;
 
 use crate::{error_variants, version::server::ServerError};
 
-#[derive(FromRow, PartialEq, Debug)]
+#[derive(FromRow, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Server {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
@@ -36,6 +37,8 @@ pub enum ServerProvisionError {
     ServerInfoError(#[from] ServerError),
     #[error("Filesystem error: {0}")]
     FilesystemError(#[from] std::io::Error),
+    #[error("Failed to get path")]
+    PathError,
 }
 
 error_variants!(ServerProvisionError {
@@ -43,7 +46,8 @@ error_variants!(ServerProvisionError {
     VersionError(INTERNAL_SERVER_ERROR),
     VersionNotFound(NOT_FOUND),
     ServerInfoError(INTERNAL_SERVER_ERROR),
-    FilesystemError(INTERNAL_SERVER_ERROR)
+    FilesystemError(INTERNAL_SERVER_ERROR),
+    PathError(INTERNAL_SERVER_ERROR),
 });
 
 #[derive(Debug, Error)]
@@ -52,6 +56,8 @@ pub enum ServerCreationError {
     ServerAlreadyExists(#[from] sqlx::Error),
     #[error("Provision error: {0}")]
     ProvisionError(#[from] ServerProvisionError),
+    #[error("Port already allocated")]
+    PortAlreadyAllocated,
 }
 
 impl Server {
@@ -64,13 +70,28 @@ impl Server {
 
     pub async fn create(
         owner: Uuid,
+        name: String,
+        port: u16,
         version: impl Into<String>,
         pool: &PgPool,
     ) -> Result<Self, ServerCreationError> {
+        // see if a server with this port allocated already exists
+        let exists = sqlx::query!(
+            "SELECT EXISTS(SELECT 1 FROM servers WHERE port = $1)",
+            port as i32
+        )
+        .fetch_one(pool)
+        .await?
+        .exists;
+        if exists == Some(true) {
+            return Err(ServerCreationError::PortAlreadyAllocated);
+        }
         let server = sqlx::query_as!(
             Server,
-            "INSERT INTO servers (owner) VALUES ($1) RETURNING *",
-            owner
+            "INSERT INTO servers (owner, name, port) VALUES ($1, $2, $3) RETURNING *",
+            owner,
+            name,
+            port as i32
         )
         .fetch_one(pool)
         .await?;
@@ -94,7 +115,13 @@ impl Server {
             .ok_or(ServerProvisionError::VersionNotFound)?;
         let server_info = version.get_server_info().await?;
 
-        self.create_container(&docker, &server_info).await
+        match self.create_container(&docker, &server_info).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                log::error!("failed to provision server: {}", e);
+                Err(e)
+            }
+        }
     }
 
     async fn create_container(
@@ -111,7 +138,11 @@ impl Server {
 
         let mut stream = docker.create_image(Some(create_image_options), None, None);
         while let Some(event) = stream.next().await {
-            println!("{:?}", event?);
+            let event = event?;
+            let Some(status) = event.status else {
+                continue;
+            };
+            log::info!("{}: {}", self.id, status)
         }
 
         if !fs::metadata("volumes").await.is_ok() {
@@ -150,13 +181,18 @@ impl Server {
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
 
-        let abs_path = fs::canonicalize(format!("volumes/{}", container_name)).await?;
-        let abs_path = abs_path.to_str().ok_or_else(|| {
-            ServerProvisionError::FilesystemError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid path",
-            ))
-        })?;
+        let mut abs_path = fs::canonicalize(format!("volumes/{}", container_name))
+            .await?
+            .to_str()
+            .ok_or(ServerProvisionError::PathError)?
+            .to_string();
+
+        if env::consts::OS == "windows" {
+            abs_path = abs_path
+                .strip_prefix("\\\\?\\")
+                .ok_or(ServerProvisionError::PathError)?
+                .to_string();
+        }
 
         let host_config = HostConfig {
             binds: Some(vec![format!("{}/:/data", abs_path)]),
@@ -177,7 +213,6 @@ impl Server {
             ..Default::default()
         };
 
-        // create container
         docker
             .create_container(
                 Some(CreateContainerOptions {
@@ -188,32 +223,14 @@ impl Server {
             )
             .await?;
 
-        // run container
         docker
             .start_container(&container_name, None::<StartContainerOptions<String>>)
             .await?;
 
-        // forever read stdout
-        let mut stream = docker
-            .attach_container(
-                &container_name,
-                Some(AttachContainerOptions::<String> {
-                    stream: Some(true),
-                    stdin: Some(true),
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    ..Default::default()
-                }),
-            )
-            .await?;
-
-        while let Some(event) = stream.output.next().await {
-            let event = event?;
-            let bytes = event.into_bytes();
-            let stdout = String::from_utf8_lossy(&bytes);
-            print!("{}", stdout);
-        }
-
         Ok(())
+    }
+
+    pub fn container_name(&self) -> String {
+        format!("waitress-{}", self.id)
     }
 }

@@ -1,6 +1,5 @@
 mod config;
 mod db;
-mod server;
 mod tests;
 mod version;
 mod web;

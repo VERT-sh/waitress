@@ -1,4 +1,5 @@
 mod create;
+mod ws;
 
 use actix_web::{
     middleware::from_fn,
@@ -10,7 +11,11 @@ use crate::web::middleware::auth::authenticated;
 pub fn configure(cfg: &mut ServiceConfig) {
     cfg.service(
         web::scope("/server")
-            .service(create::create)
-            .wrap(from_fn(authenticated)),
+            .service(
+                web::scope("/manage")
+                    .service(create::create)
+                    .wrap(from_fn(authenticated)),
+            )
+            .service(ws::ws),
     );
 }
