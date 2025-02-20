@@ -6,7 +6,11 @@ use actix_web::{
 use serde::Deserialize;
 
 use crate::{
-    db::{user::User, Database},
+    config::CONFIG,
+    db::{
+        user::{User, UserCreationError},
+        Database,
+    },
     web::response::ApiResponse,
 };
 
@@ -17,11 +21,14 @@ struct Signup {
 }
 
 #[post("/signup")]
-pub async fn signup(body: Json<Signup>, data: Data<Database>) -> impl Responder {
-    let Signup { username, password } = body.into_inner();
-    let user = User::create(username, password, &data.pool).await;
-    match user {
-        Ok(user) => ApiResponse::Success(user),
-        Err(e) => ApiResponse::Error(e.to_string()),
+pub async fn signup(
+    body: Json<Signup>,
+    data: Data<Database>,
+) -> Result<impl Responder, UserCreationError> {
+    if !CONFIG.signups_enabled {
+        return Err(UserCreationError::SignupsDisabled);
     }
+    let Signup { username, password } = body.into_inner();
+    let user = User::create(username, password, &data.pool).await?;
+    Ok(ApiResponse::Success(user))
 }

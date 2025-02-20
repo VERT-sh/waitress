@@ -1,8 +1,7 @@
-use actix_web::cookie::time::error;
 use bollard::{
     container::{
-        self, AttachContainerOptions, CreateContainerOptions, InspectContainerOptions,
-        RemoveContainerOptions, StartContainerOptions,
+        self, CreateContainerOptions, InspectContainerOptions, RemoveContainerOptions,
+        StartContainerOptions,
     },
     image::CreateImageOptions,
     secret::{HostConfig, PortBinding},

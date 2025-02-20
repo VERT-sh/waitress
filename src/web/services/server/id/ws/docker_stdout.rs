@@ -2,7 +2,6 @@ use crate::db::server::Server;
 use actix_ws::Session;
 use bollard::{container::AttachContainerOptions, Docker};
 use futures::StreamExt as _;
-use log::warn;
 use std::sync::Arc;
 use tokio::{
     pin,

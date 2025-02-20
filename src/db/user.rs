@@ -9,7 +9,7 @@ use sqlx::{FromRow, PgPool};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::config::CONFIG;
+use crate::{config::CONFIG, error_variants};
 
 #[derive(Error, Debug)]
 pub enum UserCreationError {
@@ -19,7 +19,16 @@ pub enum UserCreationError {
     UserAlreadyExists,
     #[error("Threading error")]
     ThreadError,
+    #[error("Signups are disabled")]
+    SignupsDisabled,
 }
+
+error_variants!(UserCreationError {
+    HashError(INTERNAL_SERVER_ERROR),
+    UserAlreadyExists(CONFLICT),
+    ThreadError(INTERNAL_SERVER_ERROR),
+    SignupsDisabled(FORBIDDEN),
+});
 
 #[derive(Error, Debug)]
 pub enum AuthCreationError {
