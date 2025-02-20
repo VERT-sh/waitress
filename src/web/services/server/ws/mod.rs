@@ -1,18 +1,19 @@
 mod docker_stdout;
-
-use std::sync::Arc;
+mod message;
 
 use crate::db::{server::Server, user::User, Database};
 use actix_web::{
     get,
     web::{self, Data},
-    HttpMessage as _, HttpRequest, Responder,
+    HttpRequest, Responder,
 };
-use bollard::{container::AttachContainerOptions, Docker};
+use actix_ws::Message;
 use docker_stdout::docker_stdout;
-use futures_util::StreamExt as _;
+use futures::StreamExt as _;
+use log::info;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use std::sync::Arc;
+use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -53,8 +54,35 @@ async fn ws(
 
     let server = Arc::new(server);
     let session = Arc::new(Mutex::new(session));
+    let notify = Arc::new(Notify::new());
 
-    actix_web::rt::spawn(docker_stdout(Arc::clone(&server), Arc::clone(&session)));
+    actix_web::rt::spawn(docker_stdout(
+        Arc::clone(&server),
+        Arc::clone(&session),
+        Arc::clone(&notify),
+    ));
+
+    actix_web::rt::spawn(async move {
+        while let Some(Ok(msg)) = msg_stream.next().await {
+            match msg {
+                Message::Ping(bytes) => {
+                    let mut session = session.lock().await;
+                    if session.pong(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+
+                Message::Text(text) => {
+                    info!("received text: {}", text);
+                }
+
+                _ => {}
+            }
+        }
+
+        info!("session closed");
+        notify.notify_waiters();
+    });
 
     Ok(response)
 }

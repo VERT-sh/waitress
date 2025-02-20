@@ -9,6 +9,7 @@ actix-ws = "0.3.0"
 anyhow = "1.0.95"
 argon2 = "0.5.3"
 bollard = "0.18.1"
+bytestring = "1.4.0"
 chrono = { version = "0.4.39", features = ["serde"] }
 dotenvy = "0.15.7"
 env_logger = "0.11.6"

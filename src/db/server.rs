@@ -1,7 +1,7 @@
 use bollard::{
     container::{self, AttachContainerOptions, CreateContainerOptions, StartContainerOptions},
     image::CreateImageOptions,
-    secret::HostConfig,
+    secret::{HostConfig, PortBinding},
     volume::CreateVolumeOptions,
     Docker,
 };
@@ -96,7 +96,7 @@ impl Server {
         .fetch_one(pool)
         .await?;
 
-        if let Err(e) = server.provision(version).await {
+        if let Err(e) = server.provision(version, port).await {
             sqlx::query!("DELETE FROM servers WHERE id = $1", server.id)
                 .execute(pool)
                 .await?;
@@ -106,7 +106,11 @@ impl Server {
         Ok(server)
     }
 
-    async fn provision(&self, version: impl Into<String>) -> Result<(), ServerProvisionError> {
+    async fn provision(
+        &self,
+        version: impl Into<String>,
+        port: u16,
+    ) -> Result<(), ServerProvisionError> {
         let docker = Docker::connect_with_local_defaults()?;
 
         let manifest = crate::version::manifest::VersionManifest::new().await?;
@@ -115,7 +119,7 @@ impl Server {
             .ok_or(ServerProvisionError::VersionNotFound)?;
         let server_info = version.get_server_info().await?;
 
-        match self.create_container(&docker, &server_info).await {
+        match self.create_container(&docker, &server_info, port).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 log::error!("failed to provision server: {}", e);
@@ -128,6 +132,7 @@ impl Server {
         &self,
         docker: &Docker,
         server_info: &crate::version::server::ServerJarInfo,
+        port: u16,
     ) -> Result<(), ServerProvisionError> {
         let image = format!("openjdk:{}", server_info.java_version);
 
@@ -196,6 +201,18 @@ impl Server {
 
         let host_config = HostConfig {
             binds: Some(vec![format!("{}/:/data", abs_path)]),
+            // todo: figure this out
+            port_bindings: Some({
+                let mut map = HashMap::new();
+                map.insert(
+                    "25565/tcp".to_string(),
+                    Some(vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_string()),
+                        host_port: Some(port.to_string()),
+                    }]),
+                );
+                map
+            }),
             ..Default::default()
         };
 
