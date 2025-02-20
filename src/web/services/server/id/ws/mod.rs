@@ -21,7 +21,7 @@ struct Info {
     auth: String,
 }
 
-#[get("/{id}/ws")]
+#[get("/ws")]
 async fn ws(
     req: HttpRequest,
     body: web::Payload,
@@ -50,7 +50,7 @@ async fn ws(
         ));
     }
 
-    let (response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
+    let (response, session, mut msg_stream) = actix_ws::handle(&req, body)?;
 
     let server = Arc::new(server);
     let session = Arc::new(Mutex::new(session));
@@ -76,12 +76,15 @@ async fn ws(
                     info!("received text: {}", text);
                 }
 
+                Message::Close(_) => {
+                    info!("session closed");
+                    notify.notify_waiters();
+                    break;
+                }
+
                 _ => {}
             }
         }
-
-        info!("session closed");
-        notify.notify_waiters();
     });
 
     Ok(response)

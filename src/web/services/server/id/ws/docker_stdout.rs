@@ -34,8 +34,6 @@ pub async fn docker_stdout(
     let shutdown = waiter.notified();
     pin!(shutdown);
 
-    warn!("oops!");
-
     'outer: loop {
         tokio::select! {
             _ = &mut shutdown => {

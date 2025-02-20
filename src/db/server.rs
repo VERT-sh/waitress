@@ -1,5 +1,9 @@
+use actix_web::cookie::time::error;
 use bollard::{
-    container::{self, AttachContainerOptions, CreateContainerOptions, StartContainerOptions},
+    container::{
+        self, AttachContainerOptions, CreateContainerOptions, InspectContainerOptions,
+        RemoveContainerOptions, StartContainerOptions,
+    },
     image::CreateImageOptions,
     secret::{HostConfig, PortBinding},
     volume::CreateVolumeOptions,
@@ -59,6 +63,22 @@ pub enum ServerCreationError {
     #[error("Port already allocated")]
     PortAlreadyAllocated,
 }
+
+#[derive(Debug, Error)]
+pub enum ServerDeletionError {
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] sqlx::Error),
+    #[error("Docker error: {0}")]
+    DockerError(#[from] bollard::errors::Error),
+    #[error("Server not found")]
+    ServerNotFound,
+}
+
+error_variants!(ServerDeletionError {
+    DatabaseError(INTERNAL_SERVER_ERROR),
+    DockerError(INTERNAL_SERVER_ERROR),
+    ServerNotFound(NOT_FOUND),
+});
 
 impl Server {
     pub async fn from_id(id: Uuid, pool: &PgPool) -> Option<Self> {
@@ -154,7 +174,7 @@ impl Server {
             fs::create_dir("volumes").await?;
         }
 
-        let container_name = format!("waitress-{}", self.id);
+        let container_name = self.container_name();
 
         if !fs::metadata(format!("volumes/{}", container_name))
             .await
@@ -226,6 +246,11 @@ impl Server {
                 map.insert("/data".to_string(), HashMap::new());
                 map
             }),
+            exposed_ports: Some({
+                let mut map = HashMap::new();
+                map.insert("25565/tcp".to_string(), HashMap::new());
+                map
+            }),
             host_config: Some(host_config),
             ..Default::default()
         };
@@ -247,7 +272,37 @@ impl Server {
         Ok(())
     }
 
+    pub async fn delete(self, pool: &PgPool) -> Result<(), ServerDeletionError> {
+        sqlx::query!("DELETE FROM servers WHERE id = $1", self.id)
+            .execute(pool)
+            .await?;
+        // delete the docker container if it exists
+        let docker = Docker::connect_with_local_defaults()?;
+        let container_name = self.container_name();
+        if let Ok(_) = docker
+            .inspect_container(&container_name, None::<InspectContainerOptions>)
+            .await
+        {
+            Self::force_remove(self.id).await?;
+        }
+        Ok(())
+    }
+
     pub fn container_name(&self) -> String {
         format!("waitress-{}", self.id)
+    }
+
+    pub async fn force_remove(id: Uuid) -> Result<(), ServerDeletionError> {
+        let docker = Docker::connect_with_local_defaults()?;
+        docker
+            .remove_container(
+                &format!("waitress-{}", id),
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        Ok(())
     }
 }
