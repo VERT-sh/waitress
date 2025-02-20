@@ -1,6 +1,6 @@
 # Waitress
 
-Minecraft hosting for the modern day -- dish out servers on a silver platter.
+Minecraft hosting for the modern day — dish out servers on a silver platter.
 
 ## What is Waitress?
 
