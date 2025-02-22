@@ -20,7 +20,7 @@ async fn restore_servers(pool: &PgPool) -> anyhow::Result<()> {
     let docker = Docker::connect_with_local_defaults()?;
 
     for server in servers {
-        server.restore_container(&docker).await?;
+        server.restore_container(&docker, pool).await?;
     }
 
     Ok(())

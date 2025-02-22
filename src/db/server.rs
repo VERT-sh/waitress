@@ -49,6 +49,8 @@ pub enum ServerProvisionError {
     PathError,
     #[error("Failed to start server")]
     StartError(#[from] ServerStartError),
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] sqlx::Error),
 }
 
 response_codes!(ServerProvisionError {
@@ -59,6 +61,7 @@ response_codes!(ServerProvisionError {
     FilesystemError(INTERNAL_SERVER_ERROR),
     PathError(INTERNAL_SERVER_ERROR),
     StartError(INTERNAL_SERVER_ERROR),
+    DatabaseError(INTERNAL_SERVER_ERROR),
 });
 
 #[derive(Debug, Error)]
@@ -202,11 +205,11 @@ impl Server {
 
         let container_name = self.container_name();
 
-        if !fs::metadata(format!("volumes/{}", container_name))
-            .await
-            .is_ok()
-        {
-            fs::create_dir(format!("volumes/{}", container_name)).await?;
+        let volume_path = self.volume_path();
+        let volume_path = volume_path.as_str();
+
+        if !fs::metadata(volume_path).await.is_ok() {
+            fs::create_dir(volume_path).await?;
         }
 
         if let Some(server_info) = server_info {
@@ -219,13 +222,11 @@ impl Server {
 
             docker.create_volume(volume_create).await?;
 
-            let script = format!(
-                "JAR_URL={}\n{}",
-                server_info.url,
-                include_str!("../../provision_docker.sh")
-            );
+            let script = include_str!("../../provision_docker.sh").replace("\r\n", "\n");
 
-            fs::write(format!("volumes/{}/provision.sh", container_name), script).await?;
+            let script = format!("JAR_URL={}\n{}", server_info.url, script);
+
+            fs::write(format!("{}/provision.sh", volume_path), script).await?;
         }
 
         let cmd = vec!["sh", "-c", "cd /data && sh provision.sh"]
@@ -233,7 +234,7 @@ impl Server {
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
 
-        let mut abs_path = fs::canonicalize(format!("volumes/{}", container_name))
+        let mut abs_path = fs::canonicalize(volume_path)
             .await?
             .to_str()
             .ok_or(ServerProvisionError::PathError)?
@@ -342,19 +343,47 @@ impl Server {
             .await
     }
 
-    pub async fn restore_container(&self, docker: &Docker) -> Result<(), ServerProvisionError> {
+    pub async fn restore_container(
+        &self,
+        docker: &Docker,
+        pool: &PgPool,
+    ) -> Result<(), ServerProvisionError> {
         // docker containers are ephemeral by nature
         // this function fixes this by restoring the container
         // (assuming the volume is still present)
 
         let container_name = self.container_name();
 
+        if !fs::metadata(self.volume_path()).await.is_ok() {
+            log::warn!("no volume for {}, giving up on it :(", container_name);
+
+            // delete the server from the database
+            sqlx::query!("DELETE FROM servers WHERE id = $1", self.id)
+                .execute(pool)
+                .await?;
+
+            docker
+                .remove_container(
+                    &container_name,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .ok();
+
+            return Ok(());
+        }
+
         if let Ok(_) = docker
             .inspect_container(&container_name, None::<InspectContainerOptions>)
             .await
         {
             log::info!("container {} already exists", container_name);
-            self.start().await.ok();
+            if let Err(e) = self.start().await {
+                log::error!("failed to start container {}: {}", container_name, e);
+            }
             return Ok(()); // container already exists
         }
 
@@ -363,6 +392,7 @@ impl Server {
         self.create_container(docker, None, self.port as u16)
             .await?;
         self.start().await?;
+
         Ok(())
     }
 
@@ -375,5 +405,9 @@ impl Server {
             )
             .await?;
         Ok(())
+    }
+
+    pub fn volume_path(&self) -> String {
+        format!("volumes/{}", self.container_name())
     }
 }

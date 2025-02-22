@@ -27,6 +27,8 @@ enum ServerCreateError {
     ProvisionError(#[from] ServerProvisionError),
     #[error("Invalid authentication")]
     InvalidAuth,
+    #[error("Failed to start server: {0}")]
+    StartError(#[from] server::ServerStartError),
 }
 
 response_codes!(ServerCreateError {
@@ -34,7 +36,8 @@ response_codes!(ServerCreateError {
     InvalidPort(BAD_REQUEST),
     CreationError(INTERNAL_SERVER_ERROR),
     ProvisionError(INTERNAL_SERVER_ERROR),
-    InvalidAuth(UNAUTHORIZED)
+    InvalidAuth(UNAUTHORIZED),
+    StartError(INTERNAL_SERVER_ERROR),
 });
 
 #[derive(Deserialize)]
@@ -68,5 +71,6 @@ pub async fn create(
     }
 
     let server = Server::create(user.id, name, port, version, &data.pool).await?;
+    server.start().await?;
     Ok(ApiResponse::Success(server))
 }
