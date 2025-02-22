@@ -11,10 +11,7 @@ use actix_web::{
 };
 use regex::Regex;
 
-pub async fn authenticated(
-    req: ServiceRequest,
-    next: Next<impl MessageBody>,
-) -> Result<ServiceResponse<impl MessageBody>, Error> {
+async fn authenticated_middleware(req: &ServiceRequest) -> Result<(), Error> {
     // if the route exactly matches `/api/server/{id}/ws`, we don't need to authenticate
     // damn you, actix!! this is gonna cause a vulnerability!
     let regex = Regex::new(
@@ -22,7 +19,7 @@ pub async fn authenticated(
     )
     .unwrap();
     if regex.is_match(req.path()) {
-        return next.call(req).await;
+        return Ok(());
     }
 
     let data = req.app_data::<Data<Database>>().ok_or_else(|| {
@@ -42,6 +39,15 @@ pub async fn authenticated(
 
     let mut extensions = req.extensions_mut();
     extensions.insert(user);
-    drop(extensions);
-    next.call(req).await
+    Ok(())
+}
+
+pub async fn authenticated(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<impl MessageBody>, Error> {
+    if let Err(e) = authenticated_middleware(&req).await {
+        return Ok(req.error_response(e));
+    }
+    next.call(req).await.map(|res| res.map_into_boxed_body())
 }

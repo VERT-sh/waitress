@@ -1,3 +1,4 @@
+mod all;
 mod create;
 mod id;
 
@@ -12,6 +13,7 @@ pub fn configure(cfg: &mut ServiceConfig) {
     cfg.service(
         web::scope("/server")
             .service(create::create)
+            .service(all::all)
             .configure(id::configure)
             .wrap(from_fn(authenticated)),
     );

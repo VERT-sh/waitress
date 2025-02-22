@@ -8,4 +8,4 @@ if [ ! -f server.jar ]; then
 fi
 
 echo "Starting server"
-java -Xmx1024M -Xms1024M -jar server.jar nogui
+exec java -Xmx1024M -Xms1024M -jar server.jar nogui

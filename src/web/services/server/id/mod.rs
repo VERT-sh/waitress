@@ -1,4 +1,5 @@
 mod delete;
+mod get;
 mod ws;
 
 use actix_web::{
@@ -13,6 +14,7 @@ pub fn configure(cfg: &mut ServiceConfig) {
         web::scope("/{id}")
             .service(ws::ws)
             .service(delete::delete)
+            .service(get::get)
             .wrap(from_fn(owns_server)),
     );
 }

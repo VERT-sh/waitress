@@ -1,5 +1,5 @@
 #[macro_export]
-macro_rules! error_variants {
+macro_rules! response_codes {
     ($name:ident { $($variant:ident($status:ident)),* $(,)? }) => {
         impl ::actix_web::ResponseError for $name {
             fn error_response(&self) -> ::actix_web::HttpResponse<::actix_web::body::BoxBody> {

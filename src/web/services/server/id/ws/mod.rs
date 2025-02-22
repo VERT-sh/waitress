@@ -1,18 +1,22 @@
-mod docker_stdout;
+mod container_stream;
 mod message;
+mod ping;
+mod stdin;
+mod stdout;
 
 use crate::db::{server::Server, user::User, Database};
 use actix_web::{
-    get,
+    get, rt,
     web::{self, Data},
     HttpRequest, Responder,
 };
-use actix_ws::Message;
-use docker_stdout::docker_stdout;
-use futures::StreamExt as _;
-use log::info;
+use bollard::{container::AttachContainerOptions, Docker};
+use container_stream::create_container_stream;
+use message::{handle_messages, WebsocketState};
+use ping::ping;
 use serde::Deserialize;
 use std::sync::Arc;
+use stdout::receive_stdout;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
@@ -50,42 +54,53 @@ async fn ws(
         ));
     }
 
-    let (response, session, mut msg_stream) = actix_ws::handle(&req, body)?;
+    let (response, session, msg_stream) = actix_ws::handle(&req, body)?;
+
+    let container_name = server.container_name();
 
     let server = Arc::new(server);
     let session = Arc::new(Mutex::new(session));
     let notify = Arc::new(Notify::new());
+    let docker = Arc::new(Docker::connect_with_local_defaults().unwrap());
+    let stream = Arc::new(Mutex::new(
+        docker
+            .attach_container(
+                &container_name,
+                Some(AttachContainerOptions::<String> {
+                    stream: Some(true),
+                    stdin: Some(true),
+                    stdout: Some(true),
+                    stderr: Some(true),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap(),
+    ));
 
-    actix_web::rt::spawn(docker_stdout(
-        Arc::clone(&server),
+    let notify_clone = Arc::clone(&notify);
+
+    let (tx, rx) = create_container_stream(container_name.clone(), notify_clone)
+        .await
+        .unwrap();
+
+    rt::spawn(ping(Arc::clone(&session), Arc::clone(&notify)));
+    rt::spawn(receive_stdout(
+        rx,
         Arc::clone(&session),
         Arc::clone(&notify),
     ));
 
-    actix_web::rt::spawn(async move {
-        while let Some(Ok(msg)) = msg_stream.next().await {
-            match msg {
-                Message::Ping(bytes) => {
-                    let mut session = session.lock().await;
-                    if session.pong(&bytes).await.is_err() {
-                        break;
-                    }
-                }
+    let state = WebsocketState {
+        docker: Arc::clone(&docker),
+        server: Arc::clone(&server),
+        session: Arc::clone(&session),
+        notify: Arc::clone(&notify),
+        tx,
+        msg_stream,
+    };
 
-                Message::Text(text) => {
-                    info!("received text: {}", text);
-                }
-
-                Message::Close(_) => {
-                    info!("session closed");
-                    notify.notify_waiters();
-                    break;
-                }
-
-                _ => {}
-            }
-        }
-    });
+    rt::spawn(handle_messages(state));
 
     Ok(response)
 }

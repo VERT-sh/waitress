@@ -1,6 +1,6 @@
 use crate::{
     db::{user::User, Database},
-    error_variants,
+    response_codes,
     web::response::ApiResponse,
 };
 use actix_web::{
@@ -25,7 +25,7 @@ enum LoginError {
     AuthCreationError(#[from] crate::db::user::AuthCreationError),
 }
 
-error_variants!(LoginError {
+response_codes!(LoginError {
     InvalidCredentials(BAD_REQUEST),
     AuthCreationError(INTERNAL_SERVER_ERROR)
 });

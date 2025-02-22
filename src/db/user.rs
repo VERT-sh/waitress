@@ -9,7 +9,7 @@ use sqlx::{FromRow, PgPool};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{config::CONFIG, error_variants};
+use crate::{config::CONFIG, response_codes};
 
 #[derive(Error, Debug)]
 pub enum UserCreationError {
@@ -23,7 +23,7 @@ pub enum UserCreationError {
     SignupsDisabled,
 }
 
-error_variants!(UserCreationError {
+response_codes!(UserCreationError {
     HashError(INTERNAL_SERVER_ERROR),
     UserAlreadyExists(CONFLICT),
     ThreadError(INTERNAL_SERVER_ERROR),
@@ -51,6 +51,7 @@ struct Claims {
 }
 
 #[derive(FromRow, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: Uuid,
     pub username: String,

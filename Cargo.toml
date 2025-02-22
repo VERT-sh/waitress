@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+actix-cors = "0.7.0"
 actix-web = "4.9.0"
 actix-ws = "0.3.0"
 anyhow = "1.0.95"
@@ -13,6 +14,7 @@ bytestring = "1.4.0"
 chrono = { version = "0.4.39", features = ["serde"] }
 dotenvy = "0.15.7"
 env_logger = "0.11.6"
+flume = { version = "0.11.1", features = ["async"] }
 futures = "0.3.31"
 futures-util = "0.3.31"
 jsonwebtoken = "9.3.1"

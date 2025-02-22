@@ -5,7 +5,7 @@ use bollard::{
     },
     image::CreateImageOptions,
     secret::{HostConfig, PortBinding},
-    volume::CreateVolumeOptions,
+    volume::{CreateVolumeOptions, RemoveVolumeOptions},
     Docker,
 };
 use chrono::{DateTime, Utc};
@@ -17,15 +17,20 @@ use thiserror::Error;
 use tokio::fs;
 use uuid::Uuid;
 
-use crate::{error_variants, version::server::ServerError};
+use crate::{
+    response_codes,
+    version::server::{ServerError, ServerJarInfo},
+};
 
 #[derive(FromRow, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Server {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
     pub owner: Uuid,
     pub port: i32,
     pub name: String,
+    pub docker_image: String,
 }
 
 #[derive(Error, Debug)]
@@ -42,15 +47,18 @@ pub enum ServerProvisionError {
     FilesystemError(#[from] std::io::Error),
     #[error("Failed to get path")]
     PathError,
+    #[error("Failed to start server")]
+    StartError(#[from] ServerStartError),
 }
 
-error_variants!(ServerProvisionError {
+response_codes!(ServerProvisionError {
     DockerError(INTERNAL_SERVER_ERROR),
     VersionError(INTERNAL_SERVER_ERROR),
     VersionNotFound(NOT_FOUND),
     ServerInfoError(INTERNAL_SERVER_ERROR),
     FilesystemError(INTERNAL_SERVER_ERROR),
     PathError(INTERNAL_SERVER_ERROR),
+    StartError(INTERNAL_SERVER_ERROR),
 });
 
 #[derive(Debug, Error)]
@@ -61,6 +69,10 @@ pub enum ServerCreationError {
     ProvisionError(#[from] ServerProvisionError),
     #[error("Port already allocated")]
     PortAlreadyAllocated,
+    #[error("Reqwest error: {0}")]
+    ReqwestError(#[from] reqwest::Error),
+    #[error("Server error: {0}")]
+    ServerError(#[from] ServerError),
 }
 
 #[derive(Debug, Error)]
@@ -73,11 +85,17 @@ pub enum ServerDeletionError {
     ServerNotFound,
 }
 
-error_variants!(ServerDeletionError {
+response_codes!(ServerDeletionError {
     DatabaseError(INTERNAL_SERVER_ERROR),
     DockerError(INTERNAL_SERVER_ERROR),
     ServerNotFound(NOT_FOUND),
 });
+
+#[derive(Debug, Error)]
+pub enum ServerStartError {
+    #[error("Docker error: {0}")]
+    DockerError(#[from] bollard::errors::Error),
+}
 
 impl Server {
     pub async fn from_id(id: Uuid, pool: &PgPool) -> Option<Self> {
@@ -105,17 +123,25 @@ impl Server {
         if exists == Some(true) {
             return Err(ServerCreationError::PortAlreadyAllocated);
         }
+
+        let manifest = crate::version::manifest::VersionManifest::new().await?;
+        let version = manifest
+            .get_version(version.into())
+            .ok_or(ServerProvisionError::VersionNotFound)?;
+        let server_info = version.get_server_info().await?;
+
         let server = sqlx::query_as!(
             Server,
-            "INSERT INTO servers (owner, name, port) VALUES ($1, $2, $3) RETURNING *",
+            "INSERT INTO servers (owner, name, port, docker_image) VALUES ($1, $2, $3, $4) RETURNING *",
             owner,
             name,
-            port as i32
+            port as i32,
+            format!("openjdk:{}", server_info.java_version)
         )
         .fetch_one(pool)
         .await?;
 
-        if let Err(e) = server.provision(version, port).await {
+        if let Err(e) = server.provision(&server_info, port).await {
             sqlx::query!("DELETE FROM servers WHERE id = $1", server.id)
                 .execute(pool)
                 .await?;
@@ -127,18 +153,15 @@ impl Server {
 
     async fn provision(
         &self,
-        version: impl Into<String>,
+        server_info: &ServerJarInfo,
         port: u16,
     ) -> Result<(), ServerProvisionError> {
         let docker = Docker::connect_with_local_defaults()?;
 
-        let manifest = crate::version::manifest::VersionManifest::new().await?;
-        let version = manifest
-            .get_version(version.into())
-            .ok_or(ServerProvisionError::VersionNotFound)?;
-        let server_info = version.get_server_info().await?;
-
-        match self.create_container(&docker, &server_info, port).await {
+        match self
+            .create_container(&docker, Some(&server_info), port)
+            .await
+        {
             Ok(_) => Ok(()),
             Err(e) => {
                 log::error!("failed to provision server: {}", e);
@@ -150,10 +173,14 @@ impl Server {
     async fn create_container(
         &self,
         docker: &Docker,
-        server_info: &crate::version::server::ServerJarInfo,
+        server_info: Option<&crate::version::server::ServerJarInfo>,
         port: u16,
     ) -> Result<(), ServerProvisionError> {
-        let image = format!("openjdk:{}", server_info.java_version);
+        let image = if let Some(server_info) = server_info {
+            format!("openjdk:{}", server_info.java_version)
+        } else {
+            self.docker_image.clone()
+        };
 
         let create_image_options = CreateImageOptions {
             from_image: image.as_str(),
@@ -182,23 +209,24 @@ impl Server {
             fs::create_dir(format!("volumes/{}", container_name)).await?;
         }
 
-        let volume_create = CreateVolumeOptions {
-            name: &container_name,
-            driver: &"local".to_string(),
-            driver_opts: Default::default(),
-            labels: Default::default(),
-        };
+        if let Some(server_info) = server_info {
+            let volume_create = CreateVolumeOptions {
+                name: &container_name,
+                driver: &"local".to_string(),
+                driver_opts: Default::default(),
+                labels: Default::default(),
+            };
 
-        docker.create_volume(volume_create).await?;
+            docker.create_volume(volume_create).await?;
 
-        let script = format!(
-            "JAR_URL={}\n{}",
-            server_info.url,
-            include_str!("../../provision_docker.sh")
-        );
+            let script = format!(
+                "JAR_URL={}\n{}",
+                server_info.url,
+                include_str!("../../provision_docker.sh")
+            );
 
-        // write script to file
-        fs::write(format!("volumes/{}/provision.sh", container_name), script).await?;
+            fs::write(format!("volumes/{}/provision.sh", container_name), script).await?;
+        }
 
         let cmd = vec!["sh", "-c", "cd /data && sh provision.sh"]
             .iter()
@@ -251,6 +279,7 @@ impl Server {
                 map
             }),
             host_config: Some(host_config),
+            open_stdin: Some(true),
             ..Default::default()
         };
 
@@ -264,9 +293,7 @@ impl Server {
             )
             .await?;
 
-        docker
-            .start_container(&container_name, None::<StartContainerOptions<String>>)
-            .await?;
+        self.start().await?;
 
         Ok(())
     }
@@ -283,6 +310,10 @@ impl Server {
             .await
         {
             Self::force_remove(self.id).await?;
+            // delete the volume
+            docker
+                .remove_volume(&container_name, Some(RemoveVolumeOptions { force: true }))
+                .await?;
         }
         Ok(())
     }
@@ -300,6 +331,47 @@ impl Server {
                     force: true,
                     ..Default::default()
                 }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_all(owner: Uuid, pool: &PgPool) -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as!(Server, "SELECT * FROM servers WHERE owner = $1", owner)
+            .fetch_all(pool)
+            .await
+    }
+
+    pub async fn restore_container(&self, docker: &Docker) -> Result<(), ServerProvisionError> {
+        // docker containers are ephemeral by nature
+        // this function fixes this by restoring the container
+        // (assuming the volume is still present)
+
+        let container_name = self.container_name();
+
+        if let Ok(_) = docker
+            .inspect_container(&container_name, None::<InspectContainerOptions>)
+            .await
+        {
+            log::info!("container {} already exists", container_name);
+            self.start().await.ok();
+            return Ok(()); // container already exists
+        }
+
+        log::info!("restoring container {}", container_name);
+
+        self.create_container(docker, None, self.port as u16)
+            .await?;
+        self.start().await?;
+        Ok(())
+    }
+
+    pub async fn start(&self) -> Result<(), ServerStartError> {
+        let docker = Docker::connect_with_local_defaults()?;
+        docker
+            .start_container(
+                &self.container_name(),
+                None::<StartContainerOptions<String>>,
             )
             .await?;
         Ok(())

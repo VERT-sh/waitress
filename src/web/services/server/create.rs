@@ -11,7 +11,7 @@ use crate::{
         server::{self, Server, ServerProvisionError},
         Database,
     },
-    error_variants,
+    response_codes,
     web::response::ApiResponse,
 };
 
@@ -29,7 +29,7 @@ enum ServerCreateError {
     InvalidAuth,
 }
 
-error_variants!(ServerCreateError {
+response_codes!(ServerCreateError {
     InvalidName(BAD_REQUEST),
     InvalidPort(BAD_REQUEST),
     CreationError(INTERNAL_SERVER_ERROR),
